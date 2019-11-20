@@ -18,17 +18,28 @@ logger = logging.getLogger(__name__)
 FRAME_RATE = 48000
 SAMPLE_RATE = 100
 
-FPS_RATIOS = [24./23.976, 25./23.976, 25./24.]
+FRAMERATE_RATIOS = [24./23.976, 25./23.976, 25./24.]
 
 
-def make_srt_speech_pipeline(encoding, max_subtitle_seconds, start_seconds, scale_factor):
+def make_srt_parser(args, encoding=None):
+    return SrtParser(
+        encoding=encoding or args.encoding,
+        max_subtitle_seconds=args.max_subtitle_seconds,
+        start_seconds=args.start_seconds
+    )
+
+
+def make_srt_speech_pipeline(args, scale_factor=1., parser=None):
+    if parser is None:
+        parser = make_srt_parser(args)
+    assert parser.start_seconds == args.start_seconds
     return Pipeline([
-        ('parse', SrtParser(encoding=encoding,
-                            max_subtitle_seconds=max_subtitle_seconds,
-                            start_seconds=start_seconds)),
+        ('parse', parser),
         ('scale', SrtScaler(scale_factor)),
-        ('speech_extract', SubtitleSpeechTransformer(sample_rate=SAMPLE_RATE,
-                                                     start_seconds=start_seconds))
+        ('speech_extract', SubtitleSpeechTransformer(
+            sample_rate=SAMPLE_RATE,
+            start_seconds=args.start_seconds
+        ))
     ])
 
 
@@ -57,9 +68,9 @@ def main():
     if args.vlc_mode:
         logger.setLevel(logging.CRITICAL)
     if args.reference.endswith('srt'):
-        reference_pipe = make_srt_speech_pipeline(args.reference_encoding or 'infer',
-                                                  args.max_subtitle_seconds,
-                                                  args.start_seconds)
+        reference_pipe = make_srt_speech_pipeline(
+            args, parser=make_srt_parser(args, encoding=args.reference_encoding or 'infer')
+        )
     else:
         if args.reference_encoding is not None:
             logger.warning('Reference srt encoding specified, but reference was a video file')
@@ -69,23 +80,31 @@ def main():
                                                       start_seconds=args.start_seconds,
                                                       vlc_mode=args.vlc_mode))
         ])
-    fps_ratios = np.concatenate([[1.], np.array(FPS_RATIOS), 1./np.array(FPS_RATIOS)])
+    framerate_ratios = np.concatenate([
+        [1.], np.array(FRAMERATE_RATIOS), 1./np.array(FRAMERATE_RATIOS)
+    ])
+    parser = make_srt_parser(args)
+    logger.info("extracting speech segments from subtitles '%s'...", args.srtin)
     srt_pipes = [
-        make_srt_speech_pipeline(args.encoding,
-                                 args.max_subtitle_seconds,
-                                 args.start_seconds,
-                                 scale_factor).fit(args.srtin)
-        for scale_factor in fps_ratios
+        make_srt_speech_pipeline(
+            args, scale_factor, parser=parser
+        ).fit(args.srtin)
+        for scale_factor in framerate_ratios
     ]
+    logger.info('...done')
+    logger.info("extracting speech segments from reference '%s'...", args.reference)
+    reference_pipe.fit(args.reference)
+    logger.info('...done')
     logger.info('computing alignments...')
     offset_samples, best_srt_pipe = MaxScoreAligner(FFTAligner).fit_transform(
-        reference_pipe.fit_transform(args.reference),
+        reference_pipe.transform(args.reference),
         srt_pipes,
     )
+    logger.info('...done')
     offset_seconds = offset_samples / float(SAMPLE_RATE)
     scale_step = best_srt_pipe.named_steps['scale']
     logger.info('offset seconds: %.3f', offset_seconds)
-    logger.info('fps scale factor: %.3f', scale_step.scale_factor)
+    logger.info('framerate scale factor: %.3f', scale_step.scale_factor)
     SrtOffseter(offset_seconds).fit_transform(
         scale_step.subs_).set_encoding(
         args.output_encoding).write_file(args.srtout)
