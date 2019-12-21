@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+import numbers
 import sys
 from datetime import timedelta
 
@@ -124,6 +125,26 @@ class SrtOffseter(_SrtMixin, TransformerMixin):
                                             end=sub.end + self.td_seconds,
                                             content=sub.content))
         self.subs_ = SrtSubtitles(offset_subs, encoding=subs.encoding)
+        return self
+
+    def transform(self, *_):
+        return self.subs_
+
+
+class SrtScaler(_SrtMixin, TransformerMixin):
+    def __init__(self, scale_factor):
+        super(_SrtMixin, self).__init__()
+        assert isinstance(scale_factor, numbers.Number)
+        self.scale_factor = scale_factor
+
+    def fit(self, subs, *_):
+        scaled_subs = []
+        for sub in subs:
+            scaled_subs.append(srt.Subtitle(index=sub.index,
+                                            start=sub.start * self.scale_factor,
+                                            end=sub.end * self.scale_factor,
+                                            content=sub.content))
+        self.subs_ = SrtSubtitles(scaled_subs, encoding=subs.encoding)
         return self
 
     def transform(self, *_):
